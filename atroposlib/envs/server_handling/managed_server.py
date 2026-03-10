@@ -277,7 +277,7 @@ class ManagedServer:
         # Get input text
         messages = kwargs.get("messages", [])
         prompt = self._convert_messages_to_prompt(messages)
-        logger.info(
+        logger.warning(
             "managed_server chat_completion start messages=%s n=%s max_tokens=%s temperature=%s prompt_chars=%s",
             len(messages),
             kwargs.get("n"),
@@ -320,27 +320,27 @@ class ManagedServer:
         if not self.track_tree and self.tokenizer is not None:
             input_ids = self._compute_input_ids(prompt, extending_node)
             completion_kwargs["input_ids"] = input_ids
-            logger.info(
+            logger.warning(
                 "managed_server chat_completion prepared input_ids=%s extending=%s",
                 len(input_ids),
                 extending_node is not None,
             )
         else:
-            logger.info(
+            logger.warning(
                 "managed_server chat_completion using prompt passthrough track_tree=%s tokenizer=%s",
                 self.track_tree,
                 self.tokenizer is not None,
             )
 
         # Call the tokens and logprobs wrapper directly
-        logger.info("managed_server chat_completion calling backend completion wrapper")
+        logger.warning("managed_server chat_completion calling backend completion wrapper")
         (
             prompt_tokens,
             output_tokens_list,
             output_logprobs_list,
             finish_reasons,
         ) = await self.server.tokens_and_logprobs_completion(**completion_kwargs)
-        logger.info(
+        logger.warning(
             "managed_server chat_completion backend returned prompt_tokens=%s outputs=%s",
             len(prompt_tokens),
             len(output_tokens_list),
