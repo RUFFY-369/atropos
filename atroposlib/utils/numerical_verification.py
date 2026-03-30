@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Numerical verification utilities for RL reward and advantage computation.
 

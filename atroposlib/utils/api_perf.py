@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 API performance tracker for trainer-inference communication optimization.
 
