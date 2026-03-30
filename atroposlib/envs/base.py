@@ -719,8 +719,9 @@ class BaseEnv(ABC):
         """
         if wandb_metrics is None:
             wandb_metrics = dict()
+        server_wandb_metrics = {}
         for i, server in enumerate(self.server.servers):
-            server_wandb_metrics = await server.wandb_metrics({}, f"server_{i}")
+            server_wandb_metrics.update(await server.wandb_metrics({}, f"server_{i}"))
         if len(self.completion_lengths) > 0:
             wandb_metrics["train/completion_lengths"] = sum(
                 self.completion_lengths
