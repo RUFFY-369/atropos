@@ -228,6 +228,24 @@ class BaseEnvConfig(BaseModel):
         description="Number of scored batches to observe before activating "
         "reward normalization. During warmup, raw scores are used.",
     )
+    curriculum_strategy: str = Field(
+        default="uniform",
+        description="Curriculum learning strategy. 'uniform' = no curriculum (default), "
+        "'easy_first' = oversample easy items early then anneal, "
+        "'competence_based' = sample at competence frontier. "
+        "See Platanios et al. 2019 for competence-based curriculum.",
+    )
+    curriculum_bins: int = Field(
+        default=5,
+        ge=1,
+        description="Number of difficulty bins for curriculum scheduling.",
+    )
+    curriculum_temperature: float = Field(
+        default=1.0,
+        gt=0,
+        description="Temperature for curriculum bin sampling. Higher = more uniform, "
+        "lower = more concentrated on target difficulty.",
+    )
 
 
 class BaseEnv(ABC):
@@ -290,6 +308,18 @@ class BaseEnv(ABC):
             )
         else:
             self.reward_normalizer = None
+
+        # Initialize curriculum scheduler (opt-in via config)
+        if config.curriculum_strategy != "uniform":
+            from atroposlib.envs.curriculum import CurriculumScheduler
+
+            self.curriculum = CurriculumScheduler(
+                strategy=config.curriculum_strategy,
+                n_bins=config.curriculum_bins,
+                temperature=config.curriculum_temperature,
+            )
+        else:
+            self.curriculum = None
         self.max_num_workers = config.max_num_workers
         if self.max_num_workers == -1:
             self.max_num_workers = config.max_num_workers_per_node * len(
@@ -705,6 +735,9 @@ class BaseEnv(ABC):
         # Log reward normalization metrics if active
         if self.reward_normalizer is not None:
             wandb_metrics.update(self.reward_normalizer.metrics_dict())
+        # Log curriculum metrics if active
+        if self.curriculum is not None:
+            wandb_metrics.update(self.curriculum.metrics_dict())
         wandb_metrics = await self.create_rollout_table(wandb_metrics)
         wandb_metrics = self.perf_stats(wandb_metrics)
         self.rollouts_for_wandb = []
