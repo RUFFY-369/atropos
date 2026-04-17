@@ -1,5 +1,7 @@
 import asyncio
+import httpx
 import warnings
+import json
 
 import aiohttp
 import openai
@@ -39,29 +41,48 @@ class SGLangServer(APIServer):
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
         super().__init__(config, reasoning_config=reasoning_config)
 
+
     async def check_server_status_task(self, chat_completion: bool = True):
+        # Robust health check logic for SGLang native driver.
+        # Order: /model_info -> / -> /generate
         while True:
             try:
-                if chat_completion:
-                    await self.openai.chat.completions.create(
-                        model=self.config.model_name,
-                        messages=[{"role": "user", "content": "hi"}],
-                        max_tokens=1,
-                    )
-                else:
-                    await self.openai.completions.create(
-                        model=self.config.model_name,
-                        prompt="hi",
-                        max_tokens=1,
-                    )
-                self.server_healthy = True
-            except (
-                aiohttp.ClientError,
-                openai.OpenAIError,
-                openai.APITimeoutError,
-                Exception,
-            ):
+                successful = False
+                async with httpx.AsyncClient(timeout=2.0) as client:
+                    # 1. try GET /model_info
+                    try:
+                        resp = await client.get(f'{self.config.base_url}/model_info')
+                        if resp.status_code == 200:
+                            successful = True
+                    except Exception:
+                        pass
+                    
+                    # 2. if fails -> try GET /
+                    if not successful:
+                        try:
+                            resp = await client.get(f'{self.config.base_url}/')
+                            if resp.status_code == 200:
+                                successful = True
+                        except Exception:
+                            pass
+                            
+                    # 3. if fails -> try lightweight POST /generate
+                    if not successful:
+                        try:
+                            payload = {
+                                'text': 'hi',
+                                'sampling_params': {'max_new_tokens': 1},
+                            }
+                            resp = await client.post(f'{self.config.base_url}/generate', json=payload)
+                            if resp.status_code == 200:
+                                successful = True
+                        except Exception:
+                            pass
+                
+                self.server_healthy = successful
+            except Exception:
                 self.server_healthy = False
+                
             await asyncio.sleep(1)
 
     async def _chat_completion_wrapper(self, **kwargs) -> ChatCompletion:
@@ -172,28 +193,40 @@ class SGLangServer(APIServer):
         else:
             prompt_tokens = self.tokenizer.encode(kwargs.pop("prompt"))
 
-        # Check for double BOS token, can happen if you use chat templates and forget that they insert a BOS token
+        # Check for double BOS token
         if (
             len(prompt_tokens) >= 2
             and prompt_tokens[0] == self.tokenizer.bos_token_id == prompt_tokens[1]
         ):
             prompt_tokens = prompt_tokens[1:]
+        
         if "max_tokens" in kwargs:
             kwargs["max_new_tokens"] = kwargs.pop("max_tokens")
         if "model" in kwargs:
             kwargs.pop("model")
-        # Prepare request for SGLang native API
-        request_data = {
-            "input_ids": prompt_tokens,
-            "sampling_params": kwargs,
-            "return_logprob": True,
-            "return_text_in_logprobs": False,  # We want raw token IDs, not text
+            
+        # Prepare request(s) for SGLang native API
+        n = kwargs.pop("n", 1)
+
+        # Filter sampling params to only keep keys SGLang native /generate accepts
+        allowed_keys = {
+            "temperature", "top_p", "top_k", "max_new_tokens", "stop", 
+            "presence_penalty", "frequency_penalty", "ignore_eos", 
+            "skip_special_tokens", "spaces_between_special_tokens"
         }
+        filtered_params = {k: v for k, v in kwargs.items() if k in allowed_keys}
+        
+        # SAFETY CLAMP: Never send negative max_new_tokens to SGLang
+        if "max_new_tokens" in filtered_params:
+            filtered_params["max_new_tokens"] = max(1, filtered_params["max_new_tokens"])
 
-        # Make async request to SGLang /generate endpoint
-        import aiohttp
-
-        async with aiohttp.ClientSession() as session:
+        async def make_single_request(session):
+            request_data = {
+                "input_ids": prompt_tokens,
+                "sampling_params": filtered_params,
+                "return_logprob": True,
+                "return_text_in_logprobs": False,
+            }
             async with session.post(
                 f"{self.config.base_url.replace('/v1', '')}/generate",
                 json=request_data,
@@ -204,12 +237,32 @@ class SGLangServer(APIServer):
                 ),
                 timeout=aiohttp.ClientTimeout(total=self.config.timeout),
             ) as response:
+                if response.status != 200:
+                    text = await response.text()
+                    print(f"DEBUG: SGLang Error {response.status}: {text}")
+                    print(f"DEBUG: Request Data: {json.dumps(request_data)}")
                 response.raise_for_status()
-                results = await response.json()
+                return await response.json()
 
-        # Handle both single and batch responses
-        if not isinstance(results, list):
-            results = [results]
+        import aiohttp
+
+        async with aiohttp.ClientSession() as session:
+            if n > 1:
+                results = await asyncio.gather(
+                    *[make_single_request(session) for _ in range(n)]
+                )
+            else:
+                results = [await make_single_request(session)]
+
+        # Flatten results list
+        flattened_results = []
+        for r in results:
+            if isinstance(r, list):
+                flattened_results.extend(r)
+            else:
+                flattened_results.append(r)
+
+        results = flattened_results
 
         output_tokens_list = []
         output_logprobs_list = []

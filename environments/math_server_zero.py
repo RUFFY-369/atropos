@@ -430,9 +430,11 @@ class MathEnv(BaseEnv):
         to_postprocess = await self.score(to_score)
         if to_postprocess is None:
             return None, to_backlog
-        if all(
-            [to_postprocess["scores"][0] == score for score in to_postprocess["scores"]]
-        ):
+        # if all(
+        #     [to_postprocess["scores"][0] == score for score in to_postprocess["scores"]]
+        # ):
+        #     return None, to_backlog
+        if False: # Temporary disable
             return None, to_backlog
         self.normal_rollouts.append(
             (
@@ -479,7 +481,8 @@ class MathEnv(BaseEnv):
                 task = loop.run_in_executor(self.mp_executor, score_answer, gold, resp)
                 reward = await task
                 if reward is None:
-                    return None
+                    # For validation, treat un-parseable as False instead of dropping group
+                    reward = False 
 
             assert len(inf_logp) == len(
                 masks
@@ -490,7 +493,7 @@ class MathEnv(BaseEnv):
                 {"role": "assistant", "content": resp[len(user_prompt) :]},
             ]
             # remove obviously bad examples
-            if len([1 for i in masks if i != -100]) < 10:
+            if len([1 for i in masks if i != -100]) < 1:
                 continue
             if (finish_reason == "length") and (
                 not self.config.mask_too_long_completions
